@@ -4,8 +4,8 @@ A scholarship workflow project with a React frontend, an Express backend, and a 
 
 ## Requirements
 
-- Node.js and npm
-- Python 3.9 or newer and pip
+- Node.js 22.13 or newer and npm 10 or newer
+- Python 3.11 or newer and pip
 
 ## Start the frontend
 
@@ -72,11 +72,47 @@ Student CGPA records are stored in the `student_academic_profiles` table in the 
 
 ### Deployment layout
 
-The app services can be deployed separately, but they must be configured to reach each other. Set Express `AI_SERVICE_URL` to the deployed FastAPI private service URL, and set FastAPI `OLLAMA_BASE_URL` to the Ollama server's private API URL. Do not use `localhost` for a different host or container: it always refers to the current service's own machine/container. Set `OLLAMA_MODEL` to the exact model tag installed on that Ollama server. The React app's `VITE_API_BASE_URL` is baked in at build time and must point to the public HTTPS URL of Express; allow that exact frontend origin in Express `ALLOWED_ORIGINS`.
+The app services can be deployed separately, but they must be configured to reach each other. Set Express `AI_SERVICE_URL` to the deployed FastAPI private service URL, and set FastAPI `OLLAMA_BASE_URL` to the Ollama server's private API URL. Do not use `localhost` for a different host or container: it always refers to the current service's own machine/container. Set `OLLAMA_MODEL` to the exact installed model tag. For a split frontend/API deployment, `VITE_API_BASE_URL` is baked in at build time and must point to the public HTTPS URL of Express; allow the exact frontend origin in Express `ALLOWED_ORIGINS` and configure a cookie policy supported by both domains. The bundled single-host deployment keeps the frontend and API on the same HTTPS origin and uses a relative API URL.
 
 Run Ollama on a machine with enough memory/compute and keep its API private behind a firewall/private network. Ollama's local API does not provide authentication by default; do not expose it publicly. If FastAPI reaches it across hosts, use a private network or a trusted TLS/authentication reverse proxy and set `OLLAMA_API_KEY` when that proxy requires a bearer token. Do not send student documents to an unapproved third party. For production, serve the web app and APIs over HTTPS and keep `SESSION_COOKIE_SECURE=true`.
 
 The current app stores accounts/applications in SQLite and private uploads on disk. A first deployment should use one persistent FastAPI instance with durable volumes configured through `DATABASE_PATH` and `UPLOAD_DIR`; ephemeral local files will be lost when a host restarts or redeploys. This storage setup is not suitable for horizontally scaled production. Before running multiple API instances or handling substantial real student usage, migrate SQLite to a managed database and private uploads to shared object storage.
+
+### Single-host Docker deployment
+
+The repository includes a Docker Compose deployment for one Linux host. Caddy terminates HTTPS and routes the browser and `/api` traffic on the same origin. Express and FastAPI are private to the Docker network. SQLite, uploaded files, and Caddy certificates use persistent named volumes. Container logs have a bounded local rotation policy. This is a single-instance deployment; it does not provide horizontal scaling.
+
+Prerequisites: Docker Engine with Compose, a domain whose DNS points to the host, inbound TCP ports 80 and 443, and an Ollama server reachable through a private network with `OLLAMA_MODEL` already installed. Do not expose the Ollama API publicly. On the host:
+
+```sh
+cp deploy/production.env.example .env.production
+```
+
+Edit `.env.production`: set `APP_DOMAIN` to your real domain and `OLLAMA_BASE_URL` to the private Ollama URL. Keep this file out of source control and restrict its permissions. The example leaves `VITE_API_BASE_URL` blank so the browser uses the same HTTPS origin. Do not set `SESSION_COOKIE_SECURE=false` in production.
+
+Validate the Compose configuration and launch the services:
+
+```sh
+docker compose --env-file .env.production config --quiet
+docker compose --env-file .env.production up -d --build
+docker compose --env-file .env.production ps
+```
+
+Create the first administrator interactively; do not place the password in a command or environment file:
+
+```sh
+docker compose --env-file .env.production exec ai-service python seed_admin.py admin@your-real-domain.edu
+```
+
+Check `https://your-domain/api/health` and confirm `ai_review.available` is `true`. For service logs, run `docker compose --env-file .env.production logs -f`. Caddy obtains and renews the HTTPS certificate when DNS and ports are configured correctly.
+
+To make an encrypted backup, install `age` on the host and create a recipient key pair with `age-keygen`; keep the private key offline. Use a separately mounted, encrypted backup volume and run `bash deploy/backup.sh /absolute/path/to/backup-volume <age-public-recipient>`. The script uses SQLite's online backup API, includes uploaded files, encrypts the archive, and removes its temporary plaintext copies on exit. Schedule it with the host's scheduler, copy archives off-host, and test restoring both the database and uploads before storing real student records. Keep the backup volume and its scratch space encrypted because they briefly contain plaintext while the archive is assembled. The Compose file starts one FastAPI process because SQLite is local to this host. For multiple instances or higher traffic, migrate to managed PostgreSQL and private shared object storage, add shared rate limiting and background OCR/AI jobs, then deploy using the chosen provider's managed services.
+
+### Render deployment
+
+The repository also includes a Render Blueprint in `render.yaml`. It creates a public portal service and two private services for Express and FastAPI. The portal serves the React build and proxies `/api` over Render's private network, so browser requests and the HTTP-only sign-in cookie stay on one origin. The Blueprint places services in Singapore and gives FastAPI a 10 GB persistent disk mounted at `/data` for SQLite and uploaded documents. Change the region in all three service entries before the first deployment if another Render region is preferable; Render does not let a service change regions after creation.
+
+To deploy, push this repository to GitHub, select **New → Blueprint** in Render, connect the repository, and apply `render.yaml`. Set the prompted `OLLAMA_BASE_URL` to an Ollama API endpoint reachable from the Render private service network; set `OLLAMA_MODEL` if you use a different model tag. Ollama is not included in this Blueprint. A model server on a personal computer will be unavailable whenever it is offline or unreachable from Render; use an always-on server and keep its API private on the Render network or protect an external endpoint with HTTPS and authentication. If you attach a custom domain, update `ALLOWED_ORIGINS` on the Express service to that exact HTTPS origin. Keep the FastAPI disk-backed service at one instance. Render documents that persistent disks are paid, single-instance storage, and that disk-backed services have downtime during redeploys. Existing local accounts, scholarships, and uploads are not copied to Render; migrate them separately if you need them. Use the `/api/health` endpoint after deployment, then create the first admin from the FastAPI service shell with `python seed_admin.py admin@your-domain.edu`; the command prompts for a password and stores only its hash. See [Render's Blueprint reference](https://render.com/docs/blueprint-spec), [persistent disk guidance](https://render.com/docs/disks), and [health-check behavior](https://render.com/docs/health-checks).
 
 For Windows PowerShell local development, open the `ai-service` directory, activate its virtual environment, then set the development cookie option and start FastAPI:
 
@@ -95,9 +131,9 @@ The script prompts for the password twice and stores only its hash. It creates a
 
 Start the Express backend and Vite frontend as described below. Sign in as an admin with the seeded email and password, then open **Student accounts** in the admin workspace. Enter the student's college email and roll number to create their account. Share the email and initial roll-number password directly with that student. Students sign in using those details and must choose a new password before proceeding. Later they sign in with the new password. Both roles can sign out using **Sign out**. Students see their own applications; admins see the review workspace.
 
-## Renewal application workflow
+## Scholarship application workflow
 
-Signed-in students see their profile with application and distinct-scholarship counts, active scholarship cards, and their application history. Personal and college details entered in an application are saved to the student's `student_profiles` record when they continue from the first form step or save the draft. Future applications are prefilled with those details; students can edit them when something changes. Existing application details are used to initialize profiles the first time the service starts with this update. Admins create scholarship cards with a name, description, and required document types. Selecting a card shows its requirements and documents the student has uploaded to applications for that scholarship. Students can start drafts from the catalogue, edit drafts or applications returned as **Documents Required**, upload supporting files, review a summary, and submit with an explicit declaration. Submitted applications are locked for student edits until an administrator requests corrections. Students cannot set their own status or choose an owner ID; the API takes ownership from the session cookie.
+Signed-in students see their profile with application and distinct-scholarship counts, active scholarship cards, and their application history. When starting an application, students choose **First-time scholarship application** or **Scholarship renewal**. Previous scholarship reference and academic-year details are required only for renewals. Personal and college details entered in an application are saved to the student's `student_profiles` record when they continue from the first form step or save the draft. Future applications are prefilled with those details; students can edit them when something changes. Existing application details are used to initialize profiles the first time the service starts with this update. Admins create scholarship cards with a name, description, and required document types. Selecting a card shows its requirements and documents the student has uploaded to applications for that scholarship. Students can start drafts from the catalogue, edit drafts or applications returned as **Documents Required**, upload supporting files, review a summary, and submit with an explicit declaration. Submitted applications are locked for student edits until an administrator requests corrections. Students cannot set their own status or choose an owner ID; the API takes ownership from the session cookie.
 
 Signed-in admins can filter and paginate applications, review the details and private files, request documents, leave feedback, and make permitted status transitions. The workflow uses `Draft`, `Submitted`, `Under Review`, `Documents Required`, `Resubmitted`, `Verified`, and `Rejected`. A submitted application is not scholarship approval.
 
@@ -123,7 +159,7 @@ The script writes sample values to `student_academic_profiles` in the configured
 
 ### OCR-based AI review (advisory)
 
-Students can run **Check OCR text against requirements** on an application; admins can run **Analyze OCR and prepare review list**. FastAPI sends readable OCR text to Ollama's chat API and requests structured extraction of document type, candidate marks/attendance/income/arrears values, short evidence snippets, confidence, and concerns. Locally, Ollama can run on the same computer. After deployment, run Ollama on a model server reachable from FastAPI; the student's browser never connects directly to Ollama. Set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` in FastAPI's environment. The model does not verify authenticity, approve files, or make scholarship decisions. Configured numeric thresholds are compared by application code; low-confidence and absent values remain undetermined.
+Students can run **Check OCR text against requirements** on an application; admins can run **Analyze OCR and prepare review list**. FastAPI selects OCR lines relevant to the configured scholarship checks and uploaded document types, then sends excerpts capped at 1,200 characters per document and 4,800 characters for a review to Ollama's chat API. It requests a compact structured extraction of document type, candidate eligibility values, short evidence snippets, confidence, and concerns. Locally, Ollama can run on the same computer. After deployment, run Ollama on a model server reachable from FastAPI; the student's browser never connects directly to Ollama. Set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` in FastAPI's environment. The model does not verify authenticity, approve files, or make scholarship decisions. Configured numeric thresholds are compared by application code; low-confidence and absent values remain undetermined.
 
 The admin report includes an advisory requirement suggestion based on the selected scholarship's configured checks and document list. Numeric findings and community category findings are checked against their OCR evidence before they are used. For a community requirement, set the scholarship's **Required community category** (for example `BC`) in the admin scholarship settings; this also requires students to upload a community certificate. The AI extracts the category only when it is clearly printed, compares it with that scholarship's configured category, and reports the excerpt and match status. Missing, conflicting, low-confidence, or unreadable category evidence stays undetermined or requires manual review. This is an OCR suggestion, not proof of certificate authenticity or official eligibility. The admin must inspect the original documents and still manually accept or reject each application.
 

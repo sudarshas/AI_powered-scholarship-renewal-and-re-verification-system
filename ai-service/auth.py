@@ -16,6 +16,14 @@ SESSION_COOKIE = "scholarship_session"
 SESSION_MAX_AGE = 7 * 24 * 60 * 60
 DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", Path(__file__).with_name("scholarship.db")))
 COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").lower() in {"1", "true", "yes"}
+SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "lax").strip().lower()
+APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
+if SESSION_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+    raise RuntimeError("SESSION_COOKIE_SAMESITE must be 'lax', 'strict', or 'none'")
+if SESSION_COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
+    raise RuntimeError("SESSION_COOKIE_SECURE must be true when SESSION_COOKIE_SAMESITE is 'none'")
+if APP_ENV == "production" and not COOKIE_SECURE:
+    raise RuntimeError("SESSION_COOKIE_SECURE must be true in production")
 
 
 @contextmanager
@@ -37,6 +45,8 @@ def connect_database():
 
 def initialize_database():
     with connect_database() as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -120,7 +130,7 @@ def create_session(user_id: int, response: Response):
         max_age=SESSION_MAX_AGE,
         httponly=True,
         secure=COOKIE_SECURE,
-        samesite="lax",
+        samesite=SESSION_COOKIE_SAMESITE,
         path="/",
     )
 
@@ -243,7 +253,7 @@ def sign_out(request: Request, response: Response):
         key=SESSION_COOKIE,
         httponly=True,
         secure=COOKIE_SECURE,
-        samesite="lax",
+        samesite=SESSION_COOKIE_SAMESITE,
         path="/",
     )
     return {"status": "signed_out"}

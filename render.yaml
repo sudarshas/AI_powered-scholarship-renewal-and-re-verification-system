@@ -1,0 +1,80 @@
+services:
+  - type: web
+    name: scholarship-renewal-portal
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    dockerfilePath: ./frontend/Render.Dockerfile
+    dockerContext: ./frontend
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: BACKEND_HOSTPORT
+        fromService:
+          type: pserv
+          name: scholarship-renewal-backend
+          property: hostport
+
+  - type: pserv
+    name: scholarship-renewal-backend
+    runtime: docker
+    region: singapore
+    plan: 1c-2g
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: AI_SERVICE_URL
+        fromService:
+          type: pserv
+          name: scholarship-renewal-ai
+          property: hostport
+      - key: ALLOWED_ORIGINS
+        value: https://scholarship-renewal-portal.onrender.com
+      - key: MAX_UPLOAD_BYTES
+        value: "10485760"
+      - key: AI_SERVICE_TIMEOUT_MS
+        value: "240000"
+      - key: JSON_BODY_LIMIT
+        value: 128kb
+
+  - type: pserv
+    name: scholarship-renewal-ai
+    runtime: docker
+    region: singapore
+    plan: 1c-2g
+    dockerfilePath: ./ai-service/Render.Dockerfile
+    dockerContext: ./ai-service
+    disk:
+      name: scholarship-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      - key: SESSION_COOKIE_SAMESITE
+        value: lax
+      - key: DATABASE_PATH
+        value: /data/db/scholarship.db
+      - key: UPLOAD_DIR
+        value: /data/uploads
+      - key: MAX_UPLOAD_BYTES
+        value: "10485760"
+      - key: MAX_FILES_PER_APPLICATION
+        value: "8"
+      - key: OLLAMA_BASE_URL
+        sync: false
+      - key: OLLAMA_MODEL
+        value: llama3.2:1b
+      - key: OLLAMA_TIMEOUT_SECONDS
+        value: "180"

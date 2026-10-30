@@ -113,18 +113,23 @@ h1 { margin: 12px 0; color: #111827; font-size: clamp(2.2rem, 6vw, 3.5rem); }
   .cgpa-student-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cgpa-student-row > div { grid-column: 1 / -1; }
 }
-.admin-scholarship-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); align-items: stretch; gap: 14px; margin-top: 24px; }
+.admin-scholarship-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); align-items: stretch; gap: 14px; margin-top: 24px; }
 .admin-scholarship-list h3 { grid-column: 1 / -1; margin: 0 0 2px; }
-.admin-scholarship-row { display: flex; min-width: 0; flex-direction: column; align-items: stretch; gap: 11px; padding: 17px; border: 1px solid #dce5f1; border-radius: 13px; background: linear-gradient(160deg, #fff, #f9fbff); box-shadow: 0 5px 16px #1e3a5f0b; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
-.admin-scholarship-row:hover { transform: translateY(-2px); border-color: #b6c9e8; box-shadow: 0 10px 24px #1e3a5f13; }
-.admin-scholarship-row > div { min-width: 0; min-height: 86px; flex: 1; padding-bottom: 12px; border-bottom: 1px solid #e7edf5; }
-.admin-scholarship-row > div .text-button { width: 100%; color: #1e3a8a; font-size: 1.02rem; line-height: 1.35; text-align: left; white-space: normal; overflow-wrap: anywhere; }
-.admin-scholarship-row p { margin: 7px 0 0; color: #64748b; font-size: .86rem; line-height: 1.45; }
-.admin-scholarship-row > button { display: inline-flex; min-height: 42px; align-items: center; justify-content: center; padding: 9px 13px; border: 1px solid #cbd8eb; border-radius: 9px; background: white; color: #334155; font: inherit; font-weight: 650; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease; }
-.admin-scholarship-row > button:hover { transform: translateY(-1px); border-color: #93add4; background: #f1f6ff; color: #1d4ed8; box-shadow: 0 4px 10px #1e3a5f12; }
+.admin-scholarship-row { display: flex; min-width: 0; min-height: 305px; flex-direction: column; align-items: stretch; gap: 13px; padding: 19px; border: 1px solid #dce5f1; border-radius: 13px; background: linear-gradient(150deg, #fff, #f8fbff); box-shadow: 0 5px 16px #1e3a5f0b; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.admin-scholarship-row:hover { transform: translateY(-2px); border-color: #93b4fa; box-shadow: 0 10px 24px #1e3a5f13; }
+.admin-scholarship-card-main { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 9px; }
+.admin-scholarship-card-main .text-button { width: 100%; color: #1e3a8a; font-size: 1.02rem; line-height: 1.35; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.admin-scholarship-card-main p { margin: 0; color: #64748b; font-size: .9rem; line-height: 1.45; }
+.admin-scholarship-card-main .admin-scholarship-meta { font-size: .8rem; }
+.admin-student-count { display: flex; align-items: baseline; gap: 6px; margin-top: auto; padding: 2px 0; border: 0; background: transparent; color: #1d4ed8; font: inherit; text-align: left; cursor: pointer; }
+.admin-student-count strong { font-size: 1.75rem; line-height: 1; }
+.admin-student-count span { color: #64748b; font-size: .82rem; }
+.admin-student-count:hover span { color: #1d4ed8; text-decoration: underline; }
+.admin-scholarship-actions { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 8px; padding-top: 12px; border-top: 1px solid #e7edf5; }
+.admin-scholarship-actions > button { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; padding: 8px 11px; border: 1px solid #cbd8eb; border-radius: 9px; background: white; color: #334155; font: inherit; font-size: .84rem; font-weight: 650; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease; }
+.admin-scholarship-actions > button:hover { transform: translateY(-1px); border-color: #93add4; background: #f1f6ff; color: #1d4ed8; box-shadow: 0 4px 10px #1e3a5f12; }
+.admin-student-count:focus-visible, .admin-scholarship-actions > button:focus-visible { outline: 3px solid #2563eb45; outline-offset: 2px; }
 .admin-scholarship-row > button:focus-visible, .admin-scholarship-row summary:focus-visible { outline: 3px solid #2563eb45; outline-offset: 2px; }
-.admin-scholarship-row > button:nth-of-type(1) { border-color: #2563eb; background: linear-gradient(105deg, #2563eb, #4f46e5); color: white; box-shadow: 0 4px 10px #2563eb2e; }
-.admin-scholarship-row > button:nth-of-type(1):hover { border-color: #1d4ed8; background: linear-gradient(105deg, #1d4ed8, #4338ca); color: white; box-shadow: 0 7px 14px #2563eb38; }
 .catalogue-state { align-self: flex-start; padding: 5px 9px; border-radius: 999px; background: #f1f5f9; color: #64748b; font-size: .82rem; font-weight: 650; }
 .catalogue-state.is-published { background: #ecfdf3; color: #15803d; }
 .admin-scholarship-row > details { width: 100%; margin-top: 1px; border: 1px solid #e0e8f3; border-radius: 9px; background: #fff; }
@@ -155,6 +160,10 @@ h1 { margin: 12px 0; color: #111827; font-size: clamp(2.2rem, 6vw, 3.5rem); }
 .admin-ocr-document > p { margin: 0 0 9px; overflow-wrap: anywhere; }
 .ocr-document-status { color: #334155 !important; font-size: .85rem; text-transform: capitalize; }
 .ocr-document-message { color: #64748b !important; font-size: .88rem; }
+.original-document-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
+.original-document-actions a { display: inline-flex; min-height: 36px; align-items: center; padding: 7px 11px; border: 1px solid #cbd8eb; border-radius: 8px; background: #fff; color: #1d4ed8; font-size: .86rem; font-weight: 650; text-decoration: none; }
+.original-document-actions a:hover { border-color: #93b4fa; background: #eff6ff; }
+.original-document-actions a:focus-visible { outline: 3px solid #2563eb45; outline-offset: 2px; }
 .ocr-text-details { margin: 10px 0; }
 .ocr-text-details summary { color: #1d4ed8; cursor: pointer; font-weight: 650; }
 .ocr-text-details pre { max-height: 360px; overflow: auto; padding: 13px; border: 1px solid #e2e8f0; border-radius: 8px; background: white; color: #334155; font: .84rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -190,12 +199,16 @@ h1 { margin: 12px 0; color: #111827; font-size: clamp(2.2rem, 6vw, 3.5rem); }
 .ai-review-panel h4 { margin: 18px 0 6px; }
 .ai-review-panel p:last-child { margin-bottom: 0; }
 .ai-review-panel li { margin: 6px 0; }
-.ai-review-panel blockquote { margin: 5px 0 8px; color: #475569; }
-.ai-admin-suggestion { margin: 16px 0; padding: 14px 16px; border: 1px solid #fbbf24; border-radius: 10px; background: #fffbeb; color: #713f12; }
-.ai-admin-suggestion h4 { margin: 0 0 8px; }
-.ai-admin-suggestion p:last-child { margin-bottom: 0; }
-.ai-admin-suggestion-requirements_not_met { border-color: #fca5a5; background: #fff1f2; color: #881337; }
-.ai-admin-suggestion-appears_to_match { border-color: #86efac; background: #f0fdf4; color: #14532d; }
+.ai-review-result { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ai-review-result h3 { margin: 0; }
+.ai-result-status, .ai-check-status { display: inline-flex; align-items: center; width: fit-content; padding: 4px 10px; border-radius: 999px; background: #e2e8f0; color: #334155; font-size: .9rem; }
+.ai-result-status-requirements_not_met, .ai-check-status-failed { background: #fee2e2; color: #991b1b; }
+.ai-result-status-manual_review_required, .ai-check-status-undetermined { background: #fef3c7; color: #854d0e; }
+.ai-result-status-appears_to_match, .ai-check-status-passed { background: #dcfce7; color: #166534; }
+.ai-check-list { list-style: none; margin: 12px 0; padding: 0; }
+.ai-check-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #dbe5f0; }
+.ai-document-count { margin: 10px 0; }
+.ai-review-disclaimer { margin-top: 10px; color: #475569; font-size: .9rem; }
 .demo-dashboard { margin: 22px 0 30px; padding: 22px; border: 1px solid #cbdaf2; border-radius: 14px; background: linear-gradient(145deg, #f6f9ff, #fff 65%); }
 .demo-dashboard > .dashboard-heading > p { max-width: 360px; color: #64748b; }
 .demo-scholarship-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: 12px; }

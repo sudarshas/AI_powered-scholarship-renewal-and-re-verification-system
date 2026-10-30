@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { AdminDashboard, StudentDashboard } from './Workflow.jsx';
+import { apiErrorMessage } from './apiErrors.js';
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+// An empty base URL keeps production frontend/API traffic on the same origin.
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
 export default function App() {
   const [apiStatus, setApiStatus] = useState('Checking connection...');
@@ -16,11 +18,6 @@ export default function App() {
   const [confirmPassword, setConfirmPassword] = useState('');
 
   useEffect(() => {
-    if (!apiBaseUrl) {
-      setApiStatus('Set VITE_API_BASE_URL in frontend/.env');
-      return;
-    }
-
     fetch(`${apiBaseUrl}/api/health`)
       .then((response) => {
         if (!response.ok) throw new Error('Backend returned an error');
@@ -31,7 +28,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!apiBaseUrl) return;
     fetch(`${apiBaseUrl.replace(/\/+$/, '')}/api/auth/me`, { credentials: 'include' })
       .then((response) => (response.ok ? response.json() : null))
       .then((account) => {
@@ -54,10 +50,7 @@ export default function App() {
       });
       const result = await response.json();
       if (!response.ok) {
-        const detail = Array.isArray(result.detail)
-          ? result.detail.map((issue) => issue.msg).join(' ')
-          : result.detail || result.error;
-        throw new Error(detail || 'Unable to sign in. Please try again.');
+        throw new Error(apiErrorMessage(result, 'Unable to sign in. Please try again.'));
       }
       setUser(result);
       setPassword('');
@@ -87,8 +80,7 @@ export default function App() {
       });
       const result = await response.json();
       if (!response.ok) {
-        const detail = Array.isArray(result.detail) ? result.detail.map((issue) => issue.msg).join(' ') : result.detail || result.error;
-        throw new Error(detail || 'Unable to change password. Please try again.');
+        throw new Error(apiErrorMessage(result, 'Unable to change password. Please try again.'));
       }
       setUser(result);
       setCurrentPassword('');
@@ -145,7 +137,7 @@ export default function App() {
                 <input id="account-password" type={passwordVisible ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
                 <button className="password-toggle" type="button" aria-pressed={passwordVisible} onClick={() => setPasswordVisible((visible) => !visible)}>{passwordVisible ? 'Hide' : 'Show'}</button>
               </div>
-              <button type="submit" disabled={authLoading || !apiBaseUrl}>
+              <button type="submit" disabled={authLoading}>
                 {authLoading ? <><span className="button-spinner" aria-hidden="true" />Signing in...</> : 'Sign in'}
               </button>
             </form>

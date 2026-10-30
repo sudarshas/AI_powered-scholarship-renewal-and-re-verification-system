@@ -50,6 +50,7 @@ def initialize_application_tables():
                 student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 scholarship_scheme TEXT NOT NULL COLLATE NOCASE,
                 renewal_year INTEGER NOT NULL,
+                application_type TEXT NOT NULL DEFAULT 'renewal' CHECK (application_type IN ('first_time', 'renewal')),
                 status TEXT NOT NULL CHECK (status IN ('Draft', 'Submitted', 'Under Review', 'Documents Required', 'Resubmitted', 'Verified', 'Rejected')),
                 student_information TEXT NOT NULL DEFAULT '{}',
                 previous_scholarship TEXT NOT NULL DEFAULT '{}',
@@ -113,6 +114,11 @@ def initialize_application_tables():
             );
             """
         )
+        application_columns = {row["name"] for row in connection.execute("PRAGMA table_info(renewal_applications)")}
+        if "application_type" not in application_columns:
+            connection.execute(
+                "ALTER TABLE renewal_applications ADD COLUMN application_type TEXT NOT NULL DEFAULT 'renewal' CHECK (application_type IN ('first_time', 'renewal'))"
+            )
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(application_documents)")}
         migrations = {
             "ocr_status": "TEXT NOT NULL DEFAULT 'pending'",
@@ -152,6 +158,7 @@ class ApplicationPayload(BaseModel):
 
     scholarship_scheme: str = Field(min_length=1, max_length=160)
     renewal_year: int = Field(ge=2000, le=2200)
+    application_type: Literal["first_time", "renewal"] = "renewal"
     student_information: dict = Field(default_factory=dict)
     previous_scholarship: dict = Field(default_factory=dict)
     academic_details: dict = Field(default_factory=dict)
@@ -240,7 +247,7 @@ class ScholarshipRequirementsPayload(BaseModel):
 
 
 def parse_scholarship(row):
-    return {
+    scholarship = {
         "id": row["id"],
         "name": row["name"],
         "description": row["description"],
@@ -250,6 +257,9 @@ def parse_scholarship(row):
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+    if "registered_student_count" in row.keys():
+        scholarship["registered_student_count"] = row["registered_student_count"]
+    return scholarship
 
 
 def get_student_academic_profile(student_id):
@@ -323,7 +333,11 @@ def list_scholarships(user=Depends(current_user)):
         rows = connection.execute(
             "SELECT * FROM scholarships WHERE is_active = 1 ORDER BY name COLLATE NOCASE"
             if user["role"] == "student"
-            else "SELECT * FROM scholarships ORDER BY is_active DESC, name COLLATE NOCASE"
+            else """SELECT scholarships.*,
+                      (SELECT COUNT(DISTINCT student_id) FROM renewal_applications
+                       WHERE renewal_applications.scholarship_scheme = scholarships.name COLLATE NOCASE)
+                      AS registered_student_count
+                      FROM scholarships ORDER BY is_active DESC, name COLLATE NOCASE"""
         ).fetchall()
     scholarships = [parse_scholarship(row) for row in rows]
     if user["role"] == "student":
@@ -452,6 +466,7 @@ def parse_application(row):
         "application_number": row["application_number"],
         "scholarship_scheme": row["scholarship_scheme"],
         "renewal_year": row["renewal_year"],
+        "application_type": row["application_type"],
         "status": row["status"],
         "student_information": json.loads(row["student_information"]),
         "previous_scholarship": json.loads(row["previous_scholarship"]),
@@ -619,6 +634,7 @@ def application_assessment(application, rules):
     uploaded = {row["document_type"] for row in rows}
     missing = [document_type for document_type in required_types if document_type not in uploaded]
     eligibility = configured_eligibility(application, rules)
+    review_pending = application["status"] in {"Submitted", "Under Review", "Documents Required", "Resubmitted"}
     return {
         "form_validation_errors": validation_errors(application, require_declaration=False),
         "missing_document_warnings": missing,
@@ -627,9 +643,10 @@ def application_assessment(application, rules):
             "checks": eligibility,
             "unconfigured": not bool(eligibility),
         },
-        "administrative_verification_items": [
-            "Submitted academic and financial details require administrative verification."
-        ] + ([] if eligibility else ["Scheme-specific eligibility rules are not configured."]),
+        "administrative_verification_items": (
+            ["Submitted academic and financial details require administrative verification."]
+            if review_pending else []
+        ),
     }
 
 
@@ -642,13 +659,16 @@ def validation_errors(application, require_declaration=True):
         "student_information.college_name": application["student_information"].get("college_name"),
         "student_information.department_or_course": application["student_information"].get("department_or_course"),
         "student_information.current_year_of_study": application["student_information"].get("current_year_of_study"),
-        "previous_scholarship.previous_application_reference": application["previous_scholarship"].get("previous_application_reference"),
-        "previous_scholarship.previous_scholarship_academic_year": application["previous_scholarship"].get("previous_scholarship_academic_year"),
         "academic_details.previous_marks_or_cgpa": application["academic_details"].get("previous_marks_or_cgpa"),
         "academic_details.maximum_marks_or_grading_scale": application["academic_details"].get("maximum_marks_or_grading_scale"),
         "academic_details.current_semester_or_academic_year": application["academic_details"].get("current_semester_or_academic_year"),
         "financial_details.annual_family_income": application["financial_details"].get("annual_family_income"),
     }
+    if application.get("application_type", "renewal") == "renewal":
+        required_values.update({
+            "previous_scholarship.previous_application_reference": application["previous_scholarship"].get("previous_application_reference"),
+            "previous_scholarship.previous_scholarship_academic_year": application["previous_scholarship"].get("previous_scholarship_academic_year"),
+        })
     errors = [f"{field} is required" for field, value in required_values.items() if value is None or (isinstance(value, str) and not value.strip())]
     maximum_lengths = {
         "student_information.full_name": (application["student_information"].get("full_name"), 120),
@@ -658,10 +678,13 @@ def validation_errors(application, require_declaration=True):
         "student_information.college_name": (application["student_information"].get("college_name"), 200),
         "student_information.department_or_course": (application["student_information"].get("department_or_course"), 160),
         "student_information.current_year_of_study": (application["student_information"].get("current_year_of_study"), 60),
-        "previous_scholarship.previous_application_reference": (application["previous_scholarship"].get("previous_application_reference"), 120),
-        "previous_scholarship.previous_scholarship_academic_year": (application["previous_scholarship"].get("previous_scholarship_academic_year"), 40),
         "academic_details.current_semester_or_academic_year": (application["academic_details"].get("current_semester_or_academic_year"), 80),
     }
+    if application.get("application_type", "renewal") == "renewal":
+        maximum_lengths.update({
+            "previous_scholarship.previous_application_reference": (application["previous_scholarship"].get("previous_application_reference"), 120),
+            "previous_scholarship.previous_scholarship_academic_year": (application["previous_scholarship"].get("previous_scholarship_academic_year"), 40),
+        })
     for field, (value, maximum) in maximum_lengths.items():
         if value is not None and not isinstance(value, str):
             errors.append(f"{field} must be text")
@@ -772,6 +795,14 @@ def _admin_requirement_suggestion(checks, missing_documents, documents, unreadab
     }
 
 
+def _admin_suggestion_summary(status):
+    return {
+        "requirements_not_met": "OCR suggests one or more configured requirements may not be met. Verify the cited evidence against the original documents.",
+        "manual_review_required": "Some requirements or document details could not be confirmed from OCR. Review the original documents manually.",
+        "appears_to_match": "OCR suggests the configured requirements may be met. Verify the original documents before making a decision.",
+    }.get(status, "OCR review completed. Verify the original documents before making a decision.")
+
+
 def _report_for_application(application_id: int, application_row):
     application = parse_application(application_row)
     rules = scheme_rules(application["scholarship_scheme"])
@@ -816,6 +847,7 @@ def _report_for_application(application_id: int, application_row):
 
     rule_fields = [
         ("minimum_percentage", "marks_percent", "minimum"),
+        ("minimum_cgpa", "cgpa", "minimum"),
         ("minimum_attendance_percent", "attendance_percent", "minimum"),
         ("maximum_arrears", "arrears", "maximum"),
         ("maximum_annual_family_income", "annual_family_income", "maximum"),
@@ -832,19 +864,34 @@ def _report_for_application(application_id: int, application_row):
         if chosen and chosen["confidence"] < 65:
             chosen = None
         number = numeric(chosen["value"]) if chosen else None
+        scale_number = None
+        required_scale = numeric(configured.get("cgpa_scale")) if rule_name == "minimum_cgpa" else None
+        if rule_name == "minimum_cgpa":
+            scale_evidence = next(
+                (item for item in fields_by_name.get("cgpa_scale", []) if item["confidence"] >= 65 and numeric(item["value"]) is not None),
+                None,
+            )
+            scale_number = numeric(scale_evidence["value"]) if scale_evidence else None
         if number is not None and (
             (field_name in {"marks_percent", "attendance_percent"} and not 0 <= number <= 100)
-            or (field_name in {"arrears", "annual_family_income"} and number < 0)
+            or (field_name in {"arrears", "annual_family_income", "cgpa", "cgpa_scale"} and number < 0)
         ):
             chosen = None
             number = None
-        passed = None if number is None else number >= threshold if direction == "minimum" else number <= threshold
+        if rule_name == "minimum_cgpa":
+            passed = None if number is None or scale_number is None or required_scale is None else (
+                False if not math.isclose(scale_number, required_scale, abs_tol=0.001) or number > scale_number
+                else number >= threshold
+            )
+        else:
+            passed = None if number is None else number >= threshold if direction == "minimum" else number <= threshold
         checks.append({
             "rule": rule_name, "operator": direction, "threshold": threshold,
             "value": chosen["value"] if chosen else None,
             "evidence": chosen["evidence"] if chosen else None,
             "document_id": chosen["document_id"] if chosen else None,
             "confidence": chosen["confidence"] if chosen else None,
+            **({"scale": scale_number, "required_scale": required_scale} if rule_name == "minimum_cgpa" else {}),
             "status": "undetermined" if passed is None else "passed" if passed else "failed",
         })
 
@@ -920,6 +967,7 @@ def _report_for_application(application_id: int, application_row):
         "documents_approved": False,
         "note": "AI suggestions based on OCR text only. Verify every finding against the original documents. An administrator must make the review decision; this is not an official eligibility or award decision.",
     }
+    report["summary"] = _admin_suggestion_summary(report["admin_suggestion"]["status"])
     with connect_database() as connection:
         connection.execute(
             "INSERT INTO application_ai_reviews (application_id, report_json, model, created_at) VALUES (?, ?, ?, ?) "
@@ -942,6 +990,7 @@ def _saved_ai_report(application_id: int):
             report.get("documents", []),
             report.get("unreadable_documents", []),
         )
+    report["summary"] = _admin_suggestion_summary(report["admin_suggestion"]["status"])
     return report
 
 
@@ -1011,18 +1060,19 @@ def create_draft(payload: ApplicationPayload, user=Depends(require_student)):
         with connect_database() as connection:
             cursor = connection.execute(
                 """INSERT INTO renewal_applications
-                (application_number, student_id, scholarship_scheme, renewal_year, status,
+                (application_number, student_id, scholarship_scheme, renewal_year, application_type, status,
                  student_information, previous_scholarship, academic_details, financial_details,
                  declaration, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'Draft', ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, 'Draft', ?, ?, ?, ?, ?, ?, ?)""",
                 (application_number, user["id"], payload.scholarship_scheme.strip(), payload.renewal_year,
+                 payload.application_type,
                  json.dumps(values["student_information"]), json.dumps(values["previous_scholarship"]),
                  json.dumps(values["academic_details"]), json.dumps(values["financial_details"]),
                  json.dumps(values["declaration"]), now, now),
             )
             row = connection.execute("SELECT * FROM renewal_applications WHERE id = ?", (cursor.lastrowid,)).fetchone()
     except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail="A renewal application already exists for this scheme and year")
+        raise HTTPException(status_code=409, detail="An application already exists for this scholarship and year")
     return parse_application(row)
 
 
@@ -1053,9 +1103,9 @@ def update_student_application(application_id: int, payload: ApplicationPayload,
     now = int(time.time())
     with connect_database() as connection:
         connection.execute(
-            """UPDATE renewal_applications SET student_information = ?, previous_scholarship = ?,
+            """UPDATE renewal_applications SET application_type = ?, student_information = ?, previous_scholarship = ?,
                academic_details = ?, financial_details = ?, declaration = ?, updated_at = ? WHERE id = ? AND student_id = ?""",
-            (json.dumps(values["student_information"]), json.dumps(values["previous_scholarship"]),
+            (payload.application_type, json.dumps(values["student_information"]), json.dumps(values["previous_scholarship"]),
              json.dumps(values["academic_details"]), json.dumps(values["financial_details"]),
              json.dumps(values["declaration"]), now, application_id, user["id"]),
         )
@@ -1230,7 +1280,12 @@ def list_application_documents(application_id: int, user=Depends(current_user)):
 
 
 @router.get("/applications/{application_id}/documents/{document_id}")
-def download_application_document(application_id: int, document_id: int, user=Depends(current_user)):
+def download_application_document(
+    application_id: int,
+    document_id: int,
+    preview: bool = Query(default=False),
+    user=Depends(current_user),
+):
     ensure_password_changed(user)
     if user["role"] == "student":
         fetch_owned_application(application_id, user)
@@ -1246,7 +1301,12 @@ def download_application_document(application_id: int, document_id: int, user=De
     path = get_document_path(row["storage_name"])
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Document file not found")
-    return FileResponse(path, media_type=row["content_type"], filename=row["original_filename"])
+    return FileResponse(
+        path,
+        media_type=row["content_type"],
+        filename=row["original_filename"],
+        content_disposition_type="inline" if preview else "attachment",
+    )
 
 
 @router.get("/admin/applications")

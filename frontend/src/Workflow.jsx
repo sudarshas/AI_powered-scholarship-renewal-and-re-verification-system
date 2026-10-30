@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { apiErrorMessage } from './apiErrors.js';
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const documentTypes = [
@@ -33,23 +34,16 @@ async function apiRequest(path, options = {}) {
     ? await response.json()
     : null;
   if (!response.ok) {
-    const detail = result?.detail;
-    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-      const messages = [
-        ...(detail.form_validation_errors || []).map((item) => `Form: ${item}`),
-        ...(detail.missing_document_warnings || []).map((item) => `Missing document: ${item}`),
-      ];
-      throw new Error(messages.length ? messages.join('; ') : JSON.stringify(detail));
-    }
-    throw new Error(typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : 'Request could not be completed');
+    throw new Error(apiErrorMessage(result));
   }
   return result;
 }
 
-function freshApplication(user, scheme, renewalYear) {
+function freshApplication(user, scheme, renewalYear, applicationType = 'first_time') {
   return {
     scholarship_scheme: scheme,
     renewal_year: Number(renewalYear),
+    application_type: applicationType,
     student_information: {
       full_name: '',
       college_registration_number: '',
@@ -76,7 +70,7 @@ function freshApplication(user, scheme, renewalYear) {
 }
 
 function applicationToForm(application, email) {
-  const form = freshApplication({ email }, application.scholarship_scheme, application.renewal_year);
+  const form = freshApplication({ email }, application.scholarship_scheme, application.renewal_year, application.application_type || 'renewal');
   return {
     ...form,
     ...application,
@@ -91,7 +85,11 @@ function applicationToForm(application, email) {
 function applicationPayload(form) {
   const numeric = (value) => value === '' || value == null ? null : Number(value);
   return {
-    ...form,
+    scholarship_scheme: form.scholarship_scheme,
+    renewal_year: Number(form.renewal_year),
+    application_type: form.application_type,
+    student_information: form.student_information,
+    previous_scholarship: form.application_type === 'renewal' ? form.previous_scholarship : {},
     academic_details: {
       ...form.academic_details,
       previous_marks_or_cgpa: numeric(form.academic_details.previous_marks_or_cgpa),
@@ -103,11 +101,50 @@ function applicationPayload(form) {
       ...form.financial_details,
       annual_family_income: numeric(form.financial_details.annual_family_income),
     },
+    declaration: form.declaration,
   };
 }
 
 function printableDate(timestamp) {
   return timestamp ? new Date(timestamp * 1000).toLocaleDateString() : 'Not submitted';
+}
+
+const applicationFieldLabels = {
+  full_name: 'Full name',
+  college_registration_number: 'College registration number',
+  email: 'Email',
+  mobile_number: 'Mobile number',
+  college_name: 'College name',
+  department_or_course: 'Department or course',
+  current_year_of_study: 'Current year of study',
+  previous_application_reference: 'Previous beneficiary/application reference',
+  previous_scholarship_academic_year: 'Previous scholarship academic year',
+  previous_marks_or_cgpa: 'Previous academic year marks or CGPA',
+  maximum_marks_or_grading_scale: 'Maximum marks or grading scale',
+  percentage: 'Percentage',
+  arrears: 'Number of arrears',
+  attendance_percent: 'Attendance percentage',
+  current_semester_or_academic_year: 'Current semester or academic year',
+  annual_family_income: 'Annual family income',
+};
+
+function readableApplicationError(error) {
+  const match = error.match(/^([a-z_]+)\.([a-z_]+)(.*)$/i);
+  if (!match) return error;
+  const label = applicationFieldLabels[match[2]] || match[2].replaceAll('_', ' ');
+  return `${label}${match[3]}`;
+}
+
+function documentLabel(type) {
+  return documentTypes.find(([documentType]) => documentType === type)?.[1] || type.replaceAll('_', ' ');
+}
+
+function OriginalDocumentActions({ applicationId, documentId, filename }) {
+  const url = `${apiBaseUrl}/api/applications/${applicationId}/documents/${documentId}`;
+  return <span className="original-document-actions">
+    <a href={`${url}?preview=true`} target="_blank" rel="noreferrer">Preview original</a>
+    <a href={url} download={filename}>Download original</a>
+  </span>;
 }
 
 function renderSection(title, values) {
@@ -127,34 +164,40 @@ function StatusBadge({ status }) {
   return <span className={`status-badge status-${status?.toLowerCase().replaceAll(' ', '-')}`}>{status}</span>;
 }
 
-function AIReviewPanel({ report, admin = false }) {
+function AIReviewPanel({ report }) {
   if (!report) return null;
+  const status = report.admin_suggestion?.status
+    || (report.undetermined_checks?.length ? 'manual_review_required' : report.failed_checks?.length ? 'requirements_not_met' : 'appears_to_match');
+  const resultLabels = {
+    requirements_not_met: 'Possible criteria mismatch',
+    manual_review_required: 'Manual review needed',
+    appears_to_match: 'Criteria appear to match',
+  };
+  const checkLabels = {
+    minimum_percentage: 'Marks',
+    minimum_cgpa: 'CGPA',
+    minimum_attendance_percent: 'Attendance',
+    maximum_arrears: 'Arrears',
+    maximum_annual_family_income: 'Family income',
+    required_community_category: 'Community category',
+  };
+  const checkResults = { passed: 'Pass', failed: 'Does not meet', undetermined: 'Needs review' };
+  const requiredDocuments = report.manual_upload_documents || [];
+  const uploadedCount = requiredDocuments.filter((item) => item.status !== 'missing').length;
+  const missingCount = requiredDocuments.length - uploadedCount;
   return <section className="ai-review-panel" aria-label="AI document review">
-    <h3>Preliminary document review</h3>
-    <p>{report.note}</p>
-    {report.summary && <p>{report.summary}</p>}
-    {admin && report.admin_suggestion && <aside className={`ai-admin-suggestion ai-admin-suggestion-${report.admin_suggestion.status}`} aria-live="polite">
-      <h4>AI requirement suggestion: {report.admin_suggestion.title}</h4>
-      {report.admin_suggestion.reasons?.length > 0 && <ul>{report.admin_suggestion.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
-      <p>Use this as a review aid only. Check the OCR against the original documents and make the accept or reject decision manually.</p>
-    </aside>}
-    <h4>Required documents</h4>
-    {report.manual_upload_documents?.length
-      ? <ul>{report.manual_upload_documents.map((item) => <li key={item.document_type}>{item.document_type.replaceAll('_', ' ')}: {item.status === 'missing' ? 'missing' : 'uploaded; verify manually'}</li>)}</ul>
-      : <p>No required document list is configured for this scholarship.</p>}
-    <h4>Configured scholarship checks</h4>
-    {report.checks?.length ? <ul>{report.checks.map((check) => <li key={check.rule}>
-      {check.rule.replaceAll('_', ' ')}: {check.status}{check.value != null ? ` (OCR value: ${check.value}; threshold: ${check.threshold})` : ''}
-      {check.evidence ? <blockquote>“{check.evidence}”</blockquote> : null}
-    </li>)}</ul> : <p>No eligibility checks are configured.</p>}
-    {admin && report.documents?.length > 0 && <><h4>Files for manual review / government-site upload</h4><ul>{report.documents.map((document) => <li key={document.document_id}>
-      <a href={`${apiBaseUrl}/api/applications/${report.application_id}/documents/${document.document_id}`} target="_blank" rel="noreferrer">{document.original_filename}</a>
-      {' '}— uploaded as {document.uploaded_document_type.replaceAll('_', ' ')}, AI detected {document.detected_document_type.replaceAll('_', ' ')} ({document.document_type_matches ? 'type appears to match' : 'possible type mismatch'}); admin verification pending.
-      {document.concerns?.length > 0 && <ul>{document.concerns.map((concern, index) => <li key={index}>{concern}</li>)}</ul>}
-      {document.extracted_fields?.length > 0 && <ul>{document.extracted_fields.map((field, index) => <li key={index}>{field.field.replaceAll('_', ' ')}: {field.value} (confidence {field.confidence}%) — “{field.evidence}”</li>)}</ul>}
-    </li>)}</ul></>}
-    {admin && report.unreadable_documents?.length > 0 && <><h4>Files needing OCR or manual reading</h4><ul>{report.unreadable_documents.map((document) => <li key={document.document_id}><a href={`${apiBaseUrl}/api/applications/${report.application_id}/documents/${document.document_id}`} target="_blank" rel="noreferrer">{document.original_filename}</a> — {document.document_type.replaceAll('_', ' ')}, OCR status: {document.ocr_status}</li>)}</ul></>}
-    <p><strong>No files are marked approved by AI.</strong> The admin must verify each original and upload any cleared files manually to the government website.</p>
+    <div className="ai-review-result">
+      <h3>AI screening</h3>
+      <strong className={`ai-result-status ai-result-status-${status}`}>{resultLabels[status] || 'Manual review needed'}</strong>
+    </div>
+    {report.checks?.length > 0
+      ? <ul className="ai-check-list">{report.checks.map((check) => <li key={check.rule}>
+        <span>{checkLabels[check.rule] || check.rule.replaceAll('_', ' ')}</span>
+        <strong className={`ai-check-status ai-check-status-${check.status}`}>{checkResults[check.status] || 'Needs review'}</strong>
+      </li>)}</ul>
+      : <p>No screening rules are configured.</p>}
+    {requiredDocuments.length > 0 && <p className="ai-document-count">Documents: {uploadedCount}/{requiredDocuments.length} uploaded{missingCount ? ` · ${missingCount} missing` : ''}</p>}
+    <p className="ai-review-disclaimer">Preliminary only. Verify the originals; the administrator makes the final decision.</p>
   </section>;
 }
 
@@ -180,6 +223,7 @@ export function StudentDashboard({ user }) {
   const [screen, setScreen] = useState('profile');
   const [step, setStep] = useState(0);
   const [newYear, setNewYear] = useState(String(new Date().getFullYear()));
+  const [newApplicationType, setNewApplicationType] = useState('first_time');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -247,7 +291,7 @@ export function StudentDashboard({ user }) {
     try {
       const created = await apiRequest('/api/applications', {
         method: 'POST',
-        body: { scholarship_scheme: scholarship.name, renewal_year: Number(newYear) },
+        body: { scholarship_scheme: scholarship.name, renewal_year: Number(newYear), application_type: newApplicationType },
       });
       const detail = await apiRequest(`/api/applications/${created.id}`);
       await loadApplications();
@@ -347,7 +391,7 @@ export function StudentDashboard({ user }) {
         request.onload = () => {
           const result = JSON.parse(request.responseText || '{}');
           if (request.status >= 200 && request.status < 300) resolve(result);
-          else reject(new Error(result.detail || 'Document upload failed'));
+          else reject(new Error(apiErrorMessage(result, 'Document upload failed. Please try again.')));
         };
         request.onerror = () => reject(new Error('Unable to reach the upload service'));
         request.send(formData);
@@ -448,7 +492,8 @@ export function StudentDashboard({ user }) {
           ))}
         </section>
         <form className="start-scholarship-form" onSubmit={(event) => startDraft(event, selectedScholarship)}>
-          <label>Renewal year<input type="number" min="2000" max="2200" value={newYear} onChange={(event) => setNewYear(event.target.value)} required /></label>
+          <label>Application type<select value={newApplicationType} onChange={(event) => setNewApplicationType(event.target.value)}><option value="first_time">First-time scholarship application</option><option value="renewal">Scholarship renewal</option></select></label>
+          <label>{newApplicationType === 'renewal' ? 'Renewal year' : 'Academic year'}<input type="number" min="2000" max="2200" value={newYear} onChange={(event) => setNewYear(event.target.value)} required /></label>
           <button disabled={busy}>{busy ? 'Creating...' : 'Start application'}</button>
         </form>
         {error && <p className="form-error" role="alert">{error}</p>}
@@ -457,7 +502,13 @@ export function StudentDashboard({ user }) {
   }
 
   if (screen === 'application' && selected && form) {
-    const steps = ['Student information', 'Previous scholarship', 'Academic information', 'Financial information', 'Review and declaration'];
+    const isRenewal = form.application_type === 'renewal';
+    const steps = isRenewal
+      ? ['Student information', 'Previous scholarship', 'Academic information', 'Financial information', 'Review and declaration']
+      : ['Student information', 'Academic information', 'Financial information', 'Review and declaration'];
+    const academicStep = isRenewal ? 2 : 1;
+    const financialStep = isRenewal ? 3 : 2;
+    const reviewStep = steps.length - 1;
     const field = (section, key, label, options = {}) => (
       <label key={`${section}.${key}`}>
         {label}
@@ -480,7 +531,7 @@ export function StudentDashboard({ user }) {
       <section className="card workflow-card" aria-labelledby="application-heading">
         <button className="text-button" onClick={() => { setScreen('profile'); setError(''); }}>Back to profile</button>
         <div className="application-heading">
-          <div><p className="eyebrow">{selected.application_number}</p><h2 id="application-heading">{form.scholarship_scheme} · {form.renewal_year}</h2></div>
+          <div><p className="eyebrow">{form.application_type === 'renewal' ? 'Renewal application' : 'First-time application'} · {selected.application_number}</p><h2 id="application-heading">{form.scholarship_scheme} · {form.renewal_year}</h2></div>
           <StatusBadge status={selected.status} />
         </div>
         <p>Created {printableDate(selected.created_at)} · Submitted {printableDate(selected.submitted_at)}</p>
@@ -502,34 +553,34 @@ export function StudentDashboard({ user }) {
                 {field('student_information', 'department_or_course', 'Department or course')}
                 {field('student_information', 'current_year_of_study', 'Current year of study')}
               </div></>}
-              {step === 1 && <div className="form-grid">
+              {isRenewal && step === 1 && <div className="form-grid">
                 <label>Scholarship scheme<input value={form.scholarship_scheme} readOnly /></label>
                 <label>Renewal year<input value={form.renewal_year} readOnly /></label>
                 {field('previous_scholarship', 'previous_application_reference', 'Previous beneficiary/application reference')}
                 {field('previous_scholarship', 'previous_scholarship_academic_year', 'Previous scholarship academic year')}
               </div>}
-              {step === 2 && <div className="form-grid">
+              {step === academicStep && <div className="form-grid">
                 {field('academic_details', 'previous_marks_or_cgpa', 'Previous academic year marks or CGPA', { type: 'number', min: '0', step: 'any' })}
                 {field('academic_details', 'maximum_marks_or_grading_scale', 'Maximum marks or grading scale', { type: 'number', min: '0.01', step: 'any' })}
                 {field('academic_details', 'percentage', 'Percentage, if applicable', { type: 'number', min: '0', max: '100', step: 'any', required: false })}
                 {field('academic_details', 'arrears', 'Number of arrears, if applicable', { type: 'number', min: '0', step: '1', required: false })}
                 {field('academic_details', 'current_semester_or_academic_year', 'Current semester or academic year')}
               </div>}
-              {step === 3 && <div className="form-grid">
+              {step === financialStep && <div className="form-grid">
                 {field('financial_details', 'annual_family_income', 'Annual family income', { type: 'number', min: '0', step: 'any' })}
                 {field('financial_details', 'income_certificate_details', 'Income certificate details', { required: false })}
                 {field('financial_details', 'other_scheme_specific_fields', 'Other scheme-specific details, if applicable', { required: false })}
               </div>}
-              {step === 4 && <div className="review-panel">
+              {step === reviewStep && <div className="review-panel">
                 <h3>Review application details</h3>
                 {renderSection('Student information', form.student_information)}
-                {renderSection('Previous scholarship', form.previous_scholarship)}
+                {isRenewal && renderSection('Previous scholarship', form.previous_scholarship)}
                 {renderSection('Academic information', form.academic_details)}
                 {renderSection('Financial information', form.financial_details)}
-                {assessment?.eligibility_checks?.unconfigured && <p className="warning-box">Scheme-specific eligibility rules are not configured. Eligibility has not been determined.</p>}
-                {assessment?.form_validation_errors?.length > 0 && <div className="warning-box"><strong>Form items to complete</strong><ul>{assessment.form_validation_errors.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-                {assessment?.administrative_verification_items?.map((item) => <p className="notice-box" key={item}>{item}</p>)}
-                {assessment?.missing_document_warnings?.length > 0 && <p className="warning-box">Missing documents requested for this application: {assessment.missing_document_warnings.join(', ').replaceAll('_', ' ')}.</p>}
+                {assessment?.eligibility_checks?.unconfigured && <p className="warning-box">The college has not set eligibility rules for this scholarship, so eligibility cannot be screened yet. You can still complete the form and upload the required documents.</p>}
+                {assessment?.form_validation_errors?.length > 0 && <div className="warning-box"><strong>Complete these items before submitting ({assessment.form_validation_errors.length})</strong><ul>{assessment.form_validation_errors.map((item) => <li key={item}>{readableApplicationError(item)}</li>)}</ul></div>}
+                {selected.status !== 'Draft' && assessment?.administrative_verification_items?.map((item) => <p className="notice-box" key={item}>{item}</p>)}
+                {assessment?.missing_document_warnings?.length > 0 && <p className="warning-box">Upload these required documents: {assessment.missing_document_warnings.map(documentLabel).join(', ')}.</p>}
                 <h3>Supporting documents</h3>
                 <p>Upload PDF, JPEG, or PNG documents. Files are stored privately, and the server enforces its configured size limit.</p>
                 <div className="upload-list">
@@ -554,7 +605,7 @@ export function StudentDashboard({ user }) {
               <button type="button" className="secondary-action" onClick={saveDraft} disabled={busy}>{busy ? 'Saving...' : 'Save draft'}</button>
               <div>
                 {step > 0 && <button type="button" className="secondary-action" onClick={() => moveStep(-1)}>Previous</button>}
-                {step < 4
+                {step < reviewStep
                   ? <button type="button" onClick={() => moveStep(1)}>Continue</button>
                   : <button type="button" onClick={submitApplication} disabled={busy}>{busy ? 'Submitting...' : 'Submit application'}</button>}
               </div>
@@ -563,7 +614,7 @@ export function StudentDashboard({ user }) {
         ) : (
           <>
             {renderSection('Student information', selected.student_information)}
-            {renderSection('Previous scholarship', selected.previous_scholarship)}
+            {selected.application_type === 'renewal' && renderSection('Previous scholarship', selected.previous_scholarship)}
             {renderSection('Academic information', selected.academic_details)}
             {renderSection('Financial information', selected.financial_details)}
             {selected.assessment?.missing_document_warnings?.length > 0 && <p className="warning-box">Required or requested documents missing: {selected.assessment.missing_document_warnings.map((type) => type.replaceAll('_', ' ')).join(', ')}.</p>}
@@ -600,10 +651,10 @@ export function StudentDashboard({ user }) {
 
       <section className="card workflow-card" aria-labelledby="student-dashboard-heading">
         <div className="dashboard-heading"><div><p className="eyebrow">Your progress</p><h2 id="student-dashboard-heading">My applications</h2></div><button onClick={() => { setScreen('scholarships'); setError(''); }}>View scholarships</button></div>
-        {applications.length === 0 ? <p className="empty-state">You have no renewal applications yet. Browse scholarships to get started.</p> : (
-          <div className="application-table-wrap"><table><thead><tr><th>Application number</th><th>Scholarship</th><th>Renewal year</th><th>Submitted</th><th>Status</th><th></th></tr></thead><tbody>
+        {applications.length === 0 ? <p className="empty-state">You have no applications yet. Browse scholarships to get started.</p> : (
+          <div className="application-table-wrap"><table><thead><tr><th>Application number</th><th>Scholarship</th><th>Application type</th><th>Academic year</th><th>Submitted</th><th>Status</th><th></th></tr></thead><tbody>
             {applications.map((application) => <tr key={application.id}>
-              <td>{application.application_number}</td><td>{application.scholarship_scheme}</td><td>{application.renewal_year}</td><td>{printableDate(application.submitted_at)}</td><td><StatusBadge status={application.status} /></td>
+              <td>{application.application_number}</td><td>{application.scholarship_scheme}</td><td>{application.application_type === 'renewal' ? 'Renewal' : 'First-time'}</td><td>{application.renewal_year}</td><td>{printableDate(application.submitted_at)}</td><td><StatusBadge status={application.status} /></td>
               <td><button className="text-button" onClick={() => openApplication(application.id)}>{['Draft', 'Documents Required'].includes(application.status) ? 'Continue editing' : 'View details'}</button></td>
             </tr>)}
           </tbody></table></div>
@@ -715,6 +766,7 @@ export function AdminDashboard() {
   const [notice, setNotice] = useState('');
   const [ocrBusyId, setOcrBusyId] = useState(null);
   const [aiReviewBusy, setAiReviewBusy] = useState(false);
+  const [aiReviewError, setAiReviewError] = useState('');
   const [adminScreen, setAdminScreen] = useState('scholarships');
   const [activeScholarship, setActiveScholarship] = useState(null);
   const [scholarshipStudents, setScholarshipStudents] = useState([]);
@@ -921,6 +973,7 @@ export function AdminDashboard() {
 
   async function openApplication(id) {
     setError('');
+    setAiReviewError('');
     try {
       const result = await apiRequest(`/api/admin/applications/${id}`);
       setSelected(result);
@@ -930,6 +983,14 @@ export function AdminDashboard() {
       const available = reviewTransitions[result.status] || [];
       setReviewStatus(available[0] || 'Under Review');
       setAdminScreen('student');
+      const hasReadableOcr = result.documents?.some((document) => document.ocr_status === 'complete' && document.ocr_text?.trim());
+      if (!result.ai_review && hasReadableOcr) {
+        setAiReviewBusy(true);
+        apiRequest(`/api/admin/applications/${id}/ai-review`, { method: 'POST' })
+          .then((report) => setSelected((current) => current?.id === id ? { ...current, ai_review: report } : current))
+          .catch((requestError) => { setAiReviewError(requestError.message); setError(requestError.message); })
+          .finally(() => setAiReviewBusy(false));
+      }
     } catch (requestError) {
       setError(requestError.message);
     }
@@ -938,6 +999,7 @@ export function AdminDashboard() {
   async function runDocumentOcr(document) {
     if (!selected) return;
     setError('');
+    setAiReviewError('');
     setNotice('');
     setOcrBusyId(document.id);
     try {
@@ -950,6 +1012,18 @@ export function AdminDashboard() {
       setNotice(result.ocr_status === 'complete'
         ? 'OCR finished for ' + document.original_filename + '. Please verify the extracted text manually.'
         : result.ocr_error || 'OCR finished with status: ' + result.ocr_status + '.');
+      if (result.ocr_status === 'complete') {
+        setAiReviewBusy(true);
+        try {
+          const report = await apiRequest(`/api/admin/applications/${selected.id}/ai-review`, { method: 'POST' });
+          setSelected((current) => current?.id === selected.id ? { ...current, ai_review: report } : current);
+        } catch (reviewError) {
+          setAiReviewError(reviewError.message);
+          setError(reviewError.message);
+        } finally {
+          setAiReviewBusy(false);
+        }
+      }
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -960,11 +1034,13 @@ export function AdminDashboard() {
   async function runApplicationAIReview() {
     if (!selected) return;
     setError('');
+    setAiReviewError('');
     setAiReviewBusy(true);
     try {
       const report = await apiRequest(`/api/admin/applications/${selected.id}/ai-review`, { method: 'POST' });
       setSelected((current) => ({ ...current, ai_review: report }));
     } catch (requestError) {
+      setAiReviewError(requestError.message);
       setError(requestError.message);
     } finally {
       setAiReviewBusy(false);
@@ -1073,10 +1149,19 @@ export function AdminDashboard() {
           </form>
           {scholarships.length ? <div className="admin-scholarship-list"><h3>Scholarship settings</h3>{scholarships.map((scholarship) => (
             <article className="admin-scholarship-row" key={scholarship.id}>
-              <div><button type="button" className="text-button" onClick={() => openScholarshipStudents(scholarship)}><strong>{scholarship.name}</strong></button><p>{scholarship.required_document_types.length ? `${scholarship.required_document_types.length} required document types` : 'No required documents selected'}{scholarship.eligibility_rules?.minimum_cgpa != null ? ` · Minimum CGPA ${scholarship.eligibility_rules.minimum_cgpa}/${scholarship.eligibility_rules.cgpa_scale}` : ''}{scholarship.eligibility_rules?.required_community_category ? ` · Category ${scholarship.eligibility_rules.required_community_category}` : ''}</p></div>
-              <button type="button" className="secondary-action" onClick={() => openScholarshipStudents(scholarship)}>View students</button>
-              <span className={`catalogue-state ${scholarship.is_active ? 'is-published' : ''}`}>{scholarship.is_active ? 'Published' : 'Hidden'}</span>
-              <button type="button" className="secondary-action" onClick={() => toggleScholarship(scholarship)}>{scholarship.is_active ? 'Hide' : 'Publish'}</button>
+              <div className="admin-scholarship-card-main">
+                <span className="demo-card-icon" aria-hidden="true">✦</span>
+                <button type="button" className="text-button" onClick={() => openScholarshipStudents(scholarship)}><strong>{scholarship.name}</strong></button>
+                <p>{scholarship.description || 'Scholarship information has not been added yet.'}</p>
+                <p className="admin-scholarship-meta">{scholarship.required_document_types.length ? `${scholarship.required_document_types.length} required document types` : 'No required documents selected'}{scholarship.eligibility_rules?.minimum_cgpa != null ? ` · Minimum CGPA ${scholarship.eligibility_rules.minimum_cgpa}/${scholarship.eligibility_rules.cgpa_scale}` : ''}{scholarship.eligibility_rules?.required_community_category ? ` · Category ${scholarship.eligibility_rules.required_community_category}` : ''}</p>
+                <button type="button" className="admin-student-count" onClick={() => openScholarshipStudents(scholarship)} aria-label={`View ${scholarship.registered_student_count ?? 0} registered students for ${scholarship.name}`}>
+                  <strong>{scholarship.registered_student_count ?? 0}</strong><span>registered students</span>
+                </button>
+              </div>
+              <div className="admin-scholarship-actions">
+                <span className={`catalogue-state ${scholarship.is_active ? 'is-published' : ''}`}>{scholarship.is_active ? 'Published' : 'Hidden'}</span>
+                <button type="button" className="secondary-action" onClick={() => toggleScholarship(scholarship)}>{scholarship.is_active ? 'Hide scholarship' : 'Publish scholarship'}</button>
+              </div>
               <details className="scholarship-requirement-editor"><summary>Edit rules</summary><form className="scholarship-admin-form" onSubmit={(event) => saveScholarshipRequirements(event, scholarship.id)}>
                 <fieldset><legend>Required documents</legend>{documentTypes.map(([type, label]) => <label key={type}><input type="checkbox" name="required_document_types" value={type} defaultChecked={scholarship.required_document_types.includes(type) || (type === 'community_certificate' && Boolean(scholarship.eligibility_rules?.required_community_category))} />{label}</label>)}</fieldset>
                 <label>Minimum marks (%)<input type="number" name="minimum_percentage" min="0" max="100" step="any" defaultValue={scholarship.eligibility_rules?.minimum_percentage ?? ''} /></label>
@@ -1096,16 +1181,7 @@ export function AdminDashboard() {
               </form></details>
             </article>
           ))}</div> : <p className="empty-state">No scholarships have been created yet.</p>}
-          <section className="demo-dashboard" aria-labelledby="demo-scholarships-title">
-            <div className="dashboard-heading"><div><p className="eyebrow">Scholarship catalogue</p><h3 id="demo-scholarships-title">Published scholarships</h3></div><p>Select a scholarship to view its registered-student list and applications.</p></div>
-            <div className="demo-scholarship-grid">{scholarships.filter((scholarship) => scholarship.is_active).map((scholarship) => {
-              const sampleRecords = demoScholarships.find((item) => item.name.toLowerCase() === scholarship.name.toLowerCase());
-              return <button type="button" className="demo-scholarship-card" key={scholarship.id} onClick={() => sampleRecords ? openDemoScholarship(sampleRecords) : openScholarshipStudents(scholarship)}>
-                <span className="demo-card-icon" aria-hidden="true">✦</span><strong>{scholarship.name}</strong><span>{scholarship.description}</span>
-                <span className="demo-student-count">{sampleRecords ? sampleRecords.students.length : 'View'}<small>{sampleRecords ? ' registered students' : ' registered students'}</small></span>
-              </button>;
-            })}</div>
-          </section>
+
         </div>
       </details>
       </>}
@@ -1128,20 +1204,23 @@ export function AdminDashboard() {
           : <div className="demo-decision-actions"><button type="button" onClick={() => setDemoDecisions((current) => ({ ...current, [selectedDemoStudent.id]: 'Verified' }))}>Accept application</button><button type="button" className="secondary-action" onClick={() => setDemoDecisions((current) => ({ ...current, [selectedDemoStudent.id]: 'Rejected' }))}>Reject application</button></div>}
       </article>}
       {adminScreen === 'student' && selected && !selectedDemoStudent && <div className="admin-review">
-        <div className="application-heading"><div><p className="eyebrow">{selected.application_number}</p><h3>{selected.scholarship_scheme} · {selected.renewal_year}</h3></div><StatusBadge status={selected.status} /></div>
+        <div className="application-heading"><div><p className="eyebrow">{selected.application_type === 'renewal' ? 'Renewal application' : 'First-time application'} · {selected.application_number}</p><h3>{selected.scholarship_scheme} · {selected.renewal_year}</h3></div><StatusBadge status={selected.status} /></div>
         <p>Student: {selected.student_information?.full_name || selected.student?.email} · {selected.student?.email}</p>
         {renderSection('Student information', selected.student_information)}
-        {renderSection('Previous scholarship', selected.previous_scholarship)}
+        {selected.application_type === 'renewal' && renderSection('Previous scholarship', selected.previous_scholarship)}
         {renderSection('Academic information', selected.academic_details)}
         {renderSection('Financial information', selected.financial_details)}
         {selected.assessment?.missing_document_warnings?.length > 0 && <p className="warning-box">Required or requested documents missing: {selected.assessment.missing_document_warnings.map((type) => type.replaceAll('_', ' ')).join(', ')}.</p>}
-        {selected.assessment?.eligibility_checks?.unconfigured && <p className="warning-box">Scheme-specific eligibility rules are not configured. Eligibility is undetermined pending configuration and review.</p>}
+        {selected.assessment?.eligibility_checks?.unconfigured && <p className="warning-box">The college has not configured this scholarship&apos;s eligibility rules, so this application cannot be screened against them yet. Use Scholarships → Edit rules to add the approved criteria.</p>}
         <button type="button" className="secondary-action" onClick={runApplicationAIReview} disabled={aiReviewBusy}>{aiReviewBusy ? 'Reviewing OCR text...' : 'Analyze OCR and prepare review list'}</button>
-        {selected.ai_review && <AIReviewPanel report={selected.ai_review} admin />}
+        {aiReviewError && <p className="form-error" role="alert">AI comparison failed: {aiReviewError}</p>}
+        {!selected.ai_review && !aiReviewError && <p className="notice-box" role="status">{aiReviewBusy ? 'AI is comparing the relevant OCR excerpts with this scholarship’s configured rules. On CPU, this may take a minute or more.' : selected.documents?.some((document) => document.ocr_status === 'complete' && document.ocr_text?.trim()) ? 'Readable OCR is available. The AI comparison will appear here; you can also run it with the button above.' : 'Run OCR on uploaded documents first. The AI can compare scholarship criteria only when readable OCR text is available.'}</p>}
+        {selected.ai_review && <AIReviewPanel report={selected.ai_review} />}
         <h3>Documents</h3>
         {selected.documents?.length ? <div className="admin-ocr-documents">{selected.documents.map((document) => (
           <article className="admin-ocr-document" key={document.id}>
-            <p><strong>{document.document_type}</strong> · <a href={apiBaseUrl + '/api/applications/' + selected.id + '/documents/' + document.id} target="_blank" rel="noreferrer">{document.original_filename}</a></p>
+            <p><strong>{documentLabel(document.document_type)}</strong> · {document.original_filename}</p>
+            <OriginalDocumentActions applicationId={selected.id} documentId={document.id} filename={document.original_filename} />
             <p className="ocr-document-status">OCR status: {document.ocr_status}{document.ocr_method ? ' · ' + document.ocr_method.replaceAll('_', ' ') : ''}{document.ocr_confidence != null ? ' · average confidence ' + document.ocr_confidence + '%' : ''}</p>
             {document.ocr_error && <p className="ocr-document-message">{document.ocr_error}</p>}
             {document.ocr_text ? <details className="ocr-text-details"><summary>View extracted text</summary><pre>{document.ocr_text}</pre><p>OCR may misread names, dates, amounts, or numbers. Verify the document manually before making a decision.</p></details> : <p className="ocr-document-message">No extracted text is available yet.</p>}

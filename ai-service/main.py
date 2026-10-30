@@ -1,3 +1,4 @@
+import os
 from typing import Literal
 
 from fastapi import FastAPI
@@ -8,7 +9,13 @@ from applications import router as applications_router
 from document_ocr import runtime_status as ocr_runtime_status
 from ai_review import runtime_status as ai_review_runtime_status
 
-app = FastAPI(title="Scholarship AI Service")
+IS_PRODUCTION = os.environ.get("APP_ENV", "development").strip().lower() == "production"
+app = FastAPI(
+    title="Scholarship AI Service",
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None if IS_PRODUCTION else "/redoc",
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
+)
 app.include_router(auth_router)
 app.include_router(applications_router)
 

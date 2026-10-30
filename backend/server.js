@@ -4,8 +4,13 @@ import { pathToFileURL } from 'node:url';
 
 const app = express();
 const port = process.env.PORT || 3000;
-const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+const configuredAiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+const aiServiceUrl = (/^https?:\/\//i.test(configuredAiServiceUrl)
+  ? configuredAiServiceUrl
+  : `http://${configuredAiServiceUrl}`).replace(/\/+$/, '');
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES || 10 * 1024 * 1024);
+const isProduction = process.env.NODE_ENV === 'production';
+const aiServiceTimeoutMs = Number(process.env.AI_SERVICE_TIMEOUT_MS || 240000);
 const allowedOrigins = new Set(
   (process.env.ALLOWED_ORIGINS || 'http://localhost:5174,http://127.0.0.1:5174')
     .split(',')
@@ -13,7 +18,32 @@ const allowedOrigins = new Set(
     .filter(Boolean),
 );
 
-app.use(express.json());
+if (!Number.isInteger(maxUploadBytes) || maxUploadBytes < 1) {
+  throw new Error('MAX_UPLOAD_BYTES must be a positive whole number');
+}
+if (!Number.isInteger(aiServiceTimeoutMs) || aiServiceTimeoutMs < 1000) {
+  throw new Error('AI_SERVICE_TIMEOUT_MS must be at least 1000 milliseconds');
+}
+if (isProduction) {
+  if (!process.env.AI_SERVICE_URL || /localhost|127\.0\.0\.1/i.test(aiServiceUrl)) {
+    throw new Error('Set AI_SERVICE_URL to the private FastAPI service address in production');
+  }
+  if (!process.env.ALLOWED_ORIGINS || [...allowedOrigins].some((origin) => !origin.startsWith('https://'))) {
+    throw new Error('Set ALLOWED_ORIGINS to the exact HTTPS frontend origin(s) in production');
+  }
+}
+
+app.disable('x-powered-by');
+app.set('trust proxy', process.env.TRUST_PROXY || (isProduction ? 1 : false));
+app.use((_request, response, next) => {
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('X-Frame-Options', 'DENY');
+  response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  next();
+});
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '128kb' }));
 
 app.use((request, response, next) => {
   const origin = request.headers.origin;
@@ -68,6 +98,7 @@ async function forwardToAi(request, response, path, options = {}) {
     const aiResponse = await fetch(`${aiServiceUrl}${path}`, {
       method,
       headers,
+      signal: AbortSignal.timeout(aiServiceTimeoutMs),
       ...(method !== 'GET' && method !== 'HEAD'
         ? { body: options.body === undefined ? JSON.stringify(request.body ?? {}) : options.body }
         : {}),
@@ -219,8 +250,10 @@ app.post('/api/applications/:applicationId/submit', writeRateLimit, (request, re
   forwardToAi(request, response, `/applications/${encodeURIComponent(request.params.applicationId)}/submit`));
 app.get('/api/applications/:applicationId/documents', (request, response) =>
   forwardToAi(request, response, `/applications/${encodeURIComponent(request.params.applicationId)}/documents`));
-app.get('/api/applications/:applicationId/documents/:documentId', (request, response) =>
-  forwardToAi(request, response, `/applications/${encodeURIComponent(request.params.applicationId)}/documents/${encodeURIComponent(request.params.documentId)}`, { responseType: 'file' }));
+app.get('/api/applications/:applicationId/documents/:documentId', (request, response) => {
+  const preview = request.query.preview === 'true' ? '?preview=true' : '';
+  return forwardToAi(request, response, `/applications/${encodeURIComponent(request.params.applicationId)}/documents/${encodeURIComponent(request.params.documentId)}${preview}`, { responseType: 'file' });
+});
 
 app.get('/api/admin/applications', (request, response) => {
   const query = new URLSearchParams(request.query).toString();

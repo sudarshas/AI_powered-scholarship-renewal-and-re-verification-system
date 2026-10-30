@@ -68,6 +68,9 @@ class WorkflowApiTests(unittest.IsolatedAsyncioTestCase):
         applications.MAX_FILES_PER_APPLICATION = 8
         auth.initialize_database()
         applications.initialize_application_tables()
+        self.admin_email = "admin@example.test"
+        self.admin_password = "fake-admin-password-77"
+        auth.create_admin_account(self.admin_email, self.admin_password)
         self.http = client()
 
     async def asyncTearDown(self):
@@ -75,14 +78,21 @@ class WorkflowApiTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def register_student(self, email="student@example.test"):
-        response = await self.http.post("/auth/register", json={
-            "email": email,
-            "password": "fake-demo-password-42",
-            "role": "admin",
-        })
+        public_registration = await self.http.post("/auth/register", json={"email": email, "password": "fake-demo-password-42"})
+        self.assertEqual(public_registration.status_code, 403)
+        admin_login = await self.http.post("/auth/login", json={"email": self.admin_email, "password": self.admin_password})
+        self.assertEqual(admin_login.status_code, 200)
+        response = await self.http.post("/admin/students", json={"email": email, "roll_number": "TEST-ROLL-104"})
         self.assertEqual(response.status_code, 201, response.text)
-        self.assertEqual(response.json()["role"], "student")
-        return response.json()
+        student = response.json()["student"]
+        first_login = await self.http.post("/auth/login", json={"email": email, "password": "TEST-ROLL-104"})
+        self.assertEqual(first_login.status_code, 200)
+        self.assertTrue(first_login.json()["password_change_required"])
+        password_change = await self.http.post("/auth/change-password", json={
+            "current_password": "TEST-ROLL-104", "new_password": "fake-demo-password-42",
+        })
+        self.assertEqual(password_change.status_code, 200, password_change.text)
+        return student
 
     async def create_draft(self, email="student@example.test", year=2027, scheme="Fictional Test Scheme"):
         response = await self.http.post("/applications", json={
@@ -93,13 +103,26 @@ class WorkflowApiTests(unittest.IsolatedAsyncioTestCase):
         return response.json()
 
     async def test_registration_login_logout_hashes_and_private_student_route(self):
-        user = await self.register_student()
-        response = await self.http.get("/students/me")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["student"]["id"], user["id"])
+        email = "student@example.test"
+        await self.http.post("/auth/login", json={"email": self.admin_email, "password": self.admin_password})
+        provisioned = await self.http.post("/admin/students", json={"email": email, "roll_number": "TEST-ROLL-104"})
+        self.assertEqual(provisioned.status_code, 201, provisioned.text)
+        user = provisioned.json()["student"]
+        first_login = await self.http.post("/auth/login", json={"email": email, "password": "TEST-ROLL-104"})
+        self.assertEqual(first_login.status_code, 200)
+        self.assertTrue(first_login.json()["password_change_required"])
+        self.assertEqual((await self.http.get("/students/me")).status_code, 428)
         with auth.connect_database() as connection:
             stored = connection.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()[0]
         self.assertTrue(stored.startswith("scrypt$"))
+        self.assertNotIn("TEST-ROLL-104", stored)
+        password_change = await self.http.post("/auth/change-password", json={
+            "current_password": "TEST-ROLL-104", "new_password": "fake-demo-password-42",
+        })
+        self.assertEqual(password_change.status_code, 200)
+        response = await self.http.get("/students/me")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["student"]["id"], user["id"])
         self.assertNotIn("fake-demo-password-42", stored)
 
         await self.http.post("/auth/logout")
@@ -220,8 +243,7 @@ class WorkflowApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(submitted.status_code, 200)
 
         await self.http.post("/auth/logout")
-        admin = auth.create_admin_account("admin@example.test", "fake-admin-password-77")
-        logged_in = await self.http.post("/auth/login", json={"email": admin["email"], "password": "fake-admin-password-77"})
+        logged_in = await self.http.post("/auth/login", json={"email": self.admin_email, "password": self.admin_password})
         self.assertEqual(logged_in.status_code, 200)
         self.assertEqual((await self.http.get("/applications")).status_code, 403)
         self.assertEqual((await self.http.get("/students/me")).status_code, 403)
@@ -262,7 +284,7 @@ class WorkflowApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resubmitted.json()["application"]["status"], "Resubmitted")
 
         await self.http.post("/auth/logout")
-        await self.http.post("/auth/login", json={"email": admin["email"], "password": "fake-admin-password-77"})
+        await self.http.post("/auth/login", json={"email": self.admin_email, "password": self.admin_password})
         verified = await self.http.patch(f"/admin/applications/{draft['id']}/review", json={
             "status": "Verified", "feedback": "Administrative verification complete.",
         })
